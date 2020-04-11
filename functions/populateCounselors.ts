@@ -1,10 +1,16 @@
+/* eslint-disable import/no-extraneous-dependencies */
 import '@twilio-labs/serverless-runtime-types';
+import { left, right, chain, fold, map, tryCatch } from 'fp-ts/lib/TaskEither';
+import { of } from 'fp-ts/lib/Task';
+import { pipe } from 'fp-ts/lib/pipeable';
 import {
   Context,
   ServerlessCallback,
   ServerlessFunctionSignature,
   TwilioResponse,
 } from '@twilio-labs/serverless-runtime-types/types';
+import { WorkspaceInstance } from 'twilio/lib/rest/taskrouter/v1/workspace';
+import { WorkerInstance } from 'twilio/lib/rest/taskrouter/v1/workspace/worker';
 
 const TokenValidator = require('twilio-flex-token-validator').functionValidator;
 
@@ -21,6 +27,60 @@ type EventBody = {
   helpline: string | undefined;
 };
 
+const parse = (workspaceSID: string | undefined) =>
+  workspaceSID
+    ? right(workspaceSID)
+    : left({ message: 'Error: WorkspaceSID parameter not provided', status: 400 });
+
+const getWorkspace = (context: Context) => (sid: string) => {
+  return tryCatch(
+    () =>
+      context
+        .getTwilioClient()
+        .taskrouter.workspaces(sid)
+        .fetch(),
+    () => ({
+      message: 'Error: workspace not found with the WorkspaceSID provided',
+      status: 502,
+    }),
+  );
+};
+
+const getWorkers = (workspace: WorkspaceInstance) => {
+  return tryCatch(
+    () => workspace.workers().list(),
+    () => ({
+      message: "Error: couldn't retrieve workers for the WorkspaceSID provided",
+      status: 502,
+    }),
+  );
+};
+
+const extractAttributes = (workers: WorkerInstance[]) =>
+  workers.map(w => {
+    const attributes = JSON.parse(w.attributes);
+    return {
+      sid: w.sid,
+      fullName: attributes.full_name as string,
+      helpline: attributes.helpline as string,
+    };
+  });
+
+const filterIfHelpline = (helpline: string | undefined) => (
+  values: {
+    sid: string;
+    fullName: string;
+    helpline: string;
+  }[],
+) => {
+  if (helpline) {
+    return values
+      .filter(w => w.helpline === helpline)
+      .map(({ fullName, sid }) => ({ fullName, sid }));
+  }
+  return values.map(({ fullName, sid }) => ({ fullName, sid }));
+};
+
 export const handler: ServerlessFunctionSignature = TokenValidator(
   async (context: Context, event: {}, callback: ServerlessCallback) => {
     const response = new Twilio.Response();
@@ -31,52 +91,19 @@ export const handler: ServerlessFunctionSignature = TokenValidator(
 
     try {
       const body = event as EventBody;
-      const { workspaceSID, helpline } = body;
+      const { helpline, workspaceSID } = body;
 
-      if (workspaceSID === undefined) {
-        const err = { message: 'Error: WorkspaceSID parameter not provided', status: 400 };
-        send(response)(400)(err)(callback);
-        return;
-      }
-
-      const workspace = await context
-        .getTwilioClient()
-        .taskrouter.workspaces(workspaceSID)
-        .fetch();
-
-      const workers = await workspace.workers().list();
-
-      const withAttributes = workers.map(w => {
-        const attributes = JSON.parse(w.attributes);
-
-        return {
-          ...w,
-          attributes,
-        };
-      });
-
-      const withHelpline = withAttributes.map(w => {
-        const fullName = w.attributes.full_name as string;
-        const wHelpline = w.attributes.helpline as string;
-
-        return {
-          sid: w.sid,
-          fullName,
-          helpline: wHelpline,
-        };
-      });
-
-      if (helpline) {
-        const filtered = withHelpline.filter(w => w.helpline === helpline);
-        const workerSummaries = filtered.map(({ fullName, sid }) => ({ fullName, sid }));
-
-        send(response)(200)({ workerSummaries })(callback);
-        return;
-      }
-
-      const workerSummaries = withHelpline.map(({ fullName, sid }) => ({ fullName, sid }));
-
-      send(response)(200)({ workerSummaries })(callback);
+      await pipe(
+        parse(workspaceSID),
+        chain(getWorkspace(context)),
+        chain(getWorkers),
+        map(extractAttributes),
+        map(filterIfHelpline(helpline)),
+        fold(
+          err => of(send(response)(err.status)(err)(callback)),
+          workerSummaries => of(send(response)(200)({ workerSummaries })(callback)),
+        ),
+      )();
     } catch (err) {
       send(response)(500)(err)(callback);
     }

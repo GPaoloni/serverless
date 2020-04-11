@@ -33,6 +33,7 @@
   },
   "dependencies": {
     "@twilio-labs/serverless-runtime-types": "^1.1.8",
+    "fp-ts": "^2.5.3",
     "twilio-flex-token-validator": "^1.5.1"
   }
 }
