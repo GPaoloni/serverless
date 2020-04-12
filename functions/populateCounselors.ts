@@ -56,15 +56,23 @@ const getWorkers = (workspace: WorkspaceInstance) => {
   );
 };
 
-const extractAttributes = (workers: WorkerInstance[]) =>
-  workers.map(w => {
-    const attributes = JSON.parse(w.attributes);
-    return {
-      sid: w.sid,
-      fullName: attributes.full_name as string,
-      helpline: attributes.helpline as string,
-    };
-  });
+const extractAttributes = (workers: WorkerInstance[]) => {
+  return tryCatch(
+    async () =>
+      workers.map(w => {
+        const attributes = JSON.parse(w.attributes);
+        return {
+          sid: w.sid,
+          fullName: attributes.full_name as string,
+          helpline: attributes.helpline as string,
+        };
+      }),
+    () => ({
+      message: "Error: couldn't parse JSON response",
+      status: 502,
+    }),
+  );
+};
 
 const filterIfHelpline = (helpline: string | undefined) => (
   values: {
@@ -97,7 +105,7 @@ export const handler: ServerlessFunctionSignature = TokenValidator(
         parse(workspaceSID),
         chain(getWorkspace(context)),
         chain(getWorkers),
-        map(extractAttributes),
+        chain(extractAttributes),
         map(filterIfHelpline(helpline)),
         fold(
           err => of(send(response)(err.status)(err)(callback)),
