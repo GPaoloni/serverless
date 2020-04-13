@@ -22,11 +22,6 @@ const send = (response: TwilioResponse) => (statusCode: number) => (body: string
   callback(null, response);
 };
 
-type EventBody = {
-  workspaceSID: string | undefined;
-  helpline: string | undefined;
-};
-
 const parse = (workspaceSID: string | undefined) =>
   workspaceSID
     ? right(workspaceSID)
@@ -89,8 +84,13 @@ const filterIfHelpline = (helpline: string | undefined) => (
   return values.map(({ fullName, sid }) => ({ fullName, sid }));
 };
 
+type ReqBody = {
+  workspaceSID: string | undefined;
+  helpline: string | undefined;
+};
+
 export const handler: ServerlessFunctionSignature = TokenValidator(
-  async (context: Context, event: {}, callback: ServerlessCallback) => {
+  async (context: Context, event: ReqBody, callback: ServerlessCallback) => {
     const response = new Twilio.Response();
     response.appendHeader('Access-Control-Allow-Origin', '*');
     response.appendHeader('Access-Control-Allow-Methods', 'OPTIONS, POST, GET');
@@ -98,8 +98,7 @@ export const handler: ServerlessFunctionSignature = TokenValidator(
     response.appendHeader('Content-Type', 'application/json');
 
     try {
-      const body = event as EventBody;
-      const { helpline, workspaceSID } = body;
+      const { helpline, workspaceSID } = event;
 
       await pipe(
         parse(workspaceSID),
