@@ -1,7 +1,7 @@
 /* eslint-disable import/no-extraneous-dependencies */
 import '@twilio-labs/serverless-runtime-types';
-import { left, right, chain, fold, map, tryCatch } from 'fp-ts/lib/TaskEither';
-import { of } from 'fp-ts/lib/Task';
+import TE from 'fp-ts/lib/TaskEither';
+import T from 'fp-ts/lib/Task';
 import { pipe } from 'fp-ts/lib/pipeable';
 import {
   Context,
@@ -14,6 +14,17 @@ import { WorkerInstance } from 'twilio/lib/rest/taskrouter/v1/workspace/worker';
 
 const TokenValidator = require('twilio-flex-token-validator').functionValidator;
 
+const getStandardResponse = () => {
+  const response = new Twilio.Response();
+  response.setHeaders({
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'OPTIONS, POST, GET',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Content-Type': 'application/json',
+  });
+  return response;
+};
+
 const send = (response: TwilioResponse) => (statusCode: number) => (body: string | object) => (
   callback: ServerlessCallback,
 ) => {
@@ -24,11 +35,11 @@ const send = (response: TwilioResponse) => (statusCode: number) => (body: string
 
 const parse = (workspaceSID: string | undefined) =>
   workspaceSID
-    ? right(workspaceSID)
-    : left({ message: 'Error: WorkspaceSID parameter not provided', status: 400 });
+    ? TE.right(workspaceSID)
+    : TE.left({ message: 'Error: WorkspaceSID parameter not provided', status: 400 });
 
-const getWorkspace = (context: Context) => (sid: string) => {
-  return tryCatch(
+const getWorkspace = (context: Context) => (sid: string) =>
+  TE.tryCatch(
     () =>
       context
         .getTwilioClient()
@@ -39,20 +50,18 @@ const getWorkspace = (context: Context) => (sid: string) => {
       status: 502,
     }),
   );
-};
 
-const getWorkers = (workspace: WorkspaceInstance) => {
-  return tryCatch(
+const getWorkers = (workspace: WorkspaceInstance) =>
+  TE.tryCatch(
     () => workspace.workers().list(),
     () => ({
       message: "Error: couldn't retrieve workers for the WorkspaceSID provided",
       status: 502,
     }),
   );
-};
 
-const extractAttributes = (workers: WorkerInstance[]) => {
-  return tryCatch(
+const extractAttributes = (workers: WorkerInstance[]) =>
+  TE.tryCatch(
     async () =>
       workers.map(w => {
         const attributes = JSON.parse(w.attributes);
@@ -67,21 +76,16 @@ const extractAttributes = (workers: WorkerInstance[]) => {
       status: 502,
     }),
   );
-};
 
 const filterIfHelpline = (helpline: string | undefined) => (
-  values: {
+  workers: {
     sid: string;
     fullName: string;
     helpline: string;
   }[],
 ) => {
-  if (helpline) {
-    return values
-      .filter(w => w.helpline === helpline)
-      .map(({ fullName, sid }) => ({ fullName, sid }));
-  }
-  return values.map(({ fullName, sid }) => ({ fullName, sid }));
+  const filteredWorkers = helpline ? workers.filter(w => w.helpline === helpline) : workers;
+  return filteredWorkers.map(({ fullName, sid }) => ({ fullName, sid }));
 };
 
 type ReqBody = {
@@ -91,26 +95,24 @@ type ReqBody = {
 
 export const handler: ServerlessFunctionSignature = TokenValidator(
   async (context: Context, event: ReqBody, callback: ServerlessCallback) => {
-    const response = new Twilio.Response();
-    response.appendHeader('Access-Control-Allow-Origin', '*');
-    response.appendHeader('Access-Control-Allow-Methods', 'OPTIONS, POST, GET');
-    response.appendHeader('Access-Control-Allow-Headers', 'Content-Type');
-    response.appendHeader('Content-Type', 'application/json');
+    const response = getStandardResponse();
 
     try {
       const { helpline, workspaceSID } = event;
 
-      await pipe(
+      const runEndpoint = pipe(
         parse(workspaceSID),
-        chain(getWorkspace(context)),
-        chain(getWorkers),
-        chain(extractAttributes),
-        map(filterIfHelpline(helpline)),
-        fold(
-          err => of(send(response)(err.status)(err)(callback)),
-          workerSummaries => of(send(response)(200)({ workerSummaries })(callback)),
+        TE.chain(getWorkspace(context)),
+        TE.chain(getWorkers),
+        TE.chain(extractAttributes),
+        TE.map(filterIfHelpline(helpline)),
+        TE.fold(
+          err => T.of(send(response)(err.status)(err)(callback)),
+          workerSummaries => T.of(send(response)(200)({ workerSummaries })(callback)),
         ),
-      )();
+      );
+
+      await runEndpoint();
     } catch (err) {
       send(response)(500)(err)(callback);
     }
