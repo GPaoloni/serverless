@@ -1,8 +1,12 @@
 /* eslint-disable import/no-extraneous-dependencies */
 import '@twilio-labs/serverless-runtime-types';
-import TE from 'fp-ts/lib/TaskEither';
-import T from 'fp-ts/lib/Task';
+import * as TE from 'fp-ts/lib/TaskEither';
+import * as T from 'fp-ts/lib/Task';
+import * as E from 'fp-ts/lib/Either';
 import { pipe } from 'fp-ts/lib/pipeable';
+import { flow } from 'fp-ts/lib/function';
+import * as t from 'io-ts';
+import { failure } from 'io-ts/lib/PathReporter';
 import {
   Context,
   ServerlessCallback,
@@ -13,6 +17,8 @@ import { WorkspaceInstance } from 'twilio/lib/rest/taskrouter/v1/workspace';
 import { WorkerInstance } from 'twilio/lib/rest/taskrouter/v1/workspace/worker';
 
 const TokenValidator = require('twilio-flex-token-validator').functionValidator;
+
+// Code that can be factored out
 
 const getStandardResponse = () => {
   const response = new Twilio.Response();
@@ -33,10 +39,15 @@ const send = (response: TwilioResponse) => (statusCode: number) => (body: string
   callback(null, response);
 };
 
-const parse = (workspaceSID: string | undefined) =>
-  workspaceSID
-    ? TE.right(workspaceSID)
-    : TE.left({ message: 'Error: WorkspaceSID parameter not provided', status: 400 });
+const decodeWith = <A>(decoder: t.Decoder<unknown, A>) =>
+  flow(
+    decoder.decode,
+    E.mapLeft(errors => failure(errors).join('\n')),
+    E.mapLeft(message => ({ message, status: 400 })),
+    TE.fromEither,
+  );
+
+// Code specific to this endpoint
 
 const getWorkspace = (context: Context) => (sid: string) =>
   TE.tryCatch(
@@ -88,24 +99,26 @@ const filterIfHelpline = (helpline: string | undefined) => (
   return filteredWorkers.map(({ fullName, sid }) => ({ fullName, sid }));
 };
 
-type ReqBody = {
-  workspaceSID: string | undefined;
-  helpline: string | undefined;
-};
+const reqbody = t.type({
+  workspaceSID: t.string,
+  helpline: t.string,
+});
+
+type ReqBody = t.TypeOf<typeof reqbody>;
 
 export const handler: ServerlessFunctionSignature = TokenValidator(
   async (context: Context, event: ReqBody, callback: ServerlessCallback) => {
     const response = getStandardResponse();
 
     try {
-      const { helpline, workspaceSID } = event;
-
       const runEndpoint = pipe(
-        parse(workspaceSID),
+        TE.right(event),
+        TE.chain(decodeWith(reqbody)),
+        TE.map(({ workspaceSID }) => workspaceSID),
         TE.chain(getWorkspace(context)),
         TE.chain(getWorkers),
         TE.chain(extractAttributes),
-        TE.map(filterIfHelpline(helpline)),
+        TE.map(filterIfHelpline(event.helpline)),
         TE.fold(
           err => T.of(send(response)(err.status)(err)(callback)),
           workerSummaries => T.of(send(response)(200)({ workerSummaries })(callback)),
